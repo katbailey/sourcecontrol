@@ -1,0 +1,389 @@
+<?php
+
+/**
+ *
+ * Implementation of hook_schema()
+ *
+ */
+function sourcecontrol_schema() {
+
+  return array(
+    'deploy' => array(
+      'description' => 'A log for everything that goes on during a deploy.',
+      'fields' => array(
+        'id' => array(
+          'description' => 'PK',
+          'type'        => 'serial',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'plan_id' => array(
+          'description' => 'Deployment plan id',
+          'type'        => 'int',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'tag' => array(
+          'description' => 'Tag deployed',
+          'type'        => 'varchar',
+          'length'      => '255',
+        ),
+        'start' => array(
+          'description' => 'Start of deploy process',
+          'type'        => 'datetime',
+        ),
+        'backup_db_id' => array(
+          'description' => 'Database backup',
+          'type'        => 'int',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'backup_ugc_id' => array(
+          'description' => 'UGC backup',
+          'type'        => 'int',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'checkout_id' => array(
+          'description' => 'Checking out from the code repository',
+          'type'        => 'int',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'update_id' => array(
+          'description' => 'Run drush on the target host',
+          'type'        => 'int',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'stop' => array(
+          'description' => 'End of deploy process',
+          'type'        => 'datetime',
+        ),
+        'error' => array(
+          'description' => 'Error message(s) if any',
+          'type'        => 'text',
+        ),
+      ),
+      'indexes' => array(
+        'plan_id'        => array('plan_id'),
+        'tag'            => array('tag'),
+        'start'          => array('start'),
+        'backup_db_id'   => array('backup_db_id'),
+        'backup_ugc_id'  => array('backup_ugc_id'),
+        'checkout_id'    => array('checkout_id'),
+        'stop'           => array('stop'),
+      ),
+      'primary key' => array('id'),
+    ),
+
+    // Lookup tables
+    'deploy_deploy_precommand' => array(
+      'description' => 'Lookup for the precommands',
+      'fields' => array(
+        'id' => array(
+          'description' => 'PK',
+          'type'        => 'serial',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'deploy_id' => array(
+          'type'        => 'int',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'precommand_id' => array(
+          'type'        => 'int',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+      ),
+      'indexes' => array(
+        'deploy_precommand' => array('deploy_id','precommand_id'),
+      ),
+      'primary key' => array('id'),
+    ),
+
+    'deploy_deploy_push' => array(
+      'description' => 'Lookup for the pushes',
+      'fields' => array(
+        'id' => array(
+          'description' => 'PK',
+          'type'        => 'serial',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'deploy_id' => array(
+          'type'        => 'int',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'push_id' => array(
+          'type'        => 'int',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+      ),
+      'indexes' => array(
+        'deploy_push' => array('deploy_id','push_id'),
+      ),
+      'primary key' => array('id'),
+    ),
+
+    'deploy_deploy_postcommand' => array(
+      'description' => 'Lookup for the postcommands',
+      'fields' => array(
+        'id' => array(
+          'description' => 'PK',
+          'type'        => 'serial',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'deploy_id' => array(
+          'type'        => 'int',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'postcommand_id' => array(
+          'type'        => 'int',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+      ),
+      'indexes' => array(
+        'deploy_postcommand' => array('deploy_id','postcommand_id'),
+      ),
+      'primary key' => array('id'),
+    ),
+
+    'deploy_deploy_switchrelease' => array(
+      'description' => 'Lookup for the switchreleases',
+      'fields' => array(
+        'id' => array(
+          'description' => 'PK',
+          'type'        => 'serial',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'deploy_id' => array(
+          'type'        => 'int',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'switchrelease_id' => array(
+          'type'        => 'int',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+      ),
+      'indexes' => array(
+        'deploy_switchrelease' => array('deploy_id','switchrelease_id'),
+      ),
+      'primary key' => array('id'),
+    ),
+
+    // 1:1 relationships
+    'deploy_backup_db' => array(
+      'description' => 'Database-specific backup deploy data',
+      'fields' => array(
+        'id' => array(
+          'description' => 'PK',
+          'type'        => 'serial',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'start'   => array('type' => 'datetime'),
+        'command' => array('type' => 'text'),
+        'output'  => array('type' => 'text'),
+        'stop'    => array('type' => 'datetime'),
+      ),
+      'indexes' => array(
+        'start' => array('start'),
+        'stop'  => array('stop'),
+      ),
+      'primary key' => array('id'),
+    ),
+
+    'deploy_backup_ugc' => array(
+      'description' => 'UGC-specific backup deploy data',
+      'fields' => array(
+        'id' => array(
+          'description' => 'PK',
+          'type'        => 'serial',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'start'   => array('type' => 'datetime'),
+        'command' => array('type' => 'text'),
+        'output'  => array('type' => 'text'),
+        'stop'    => array('type' => 'datetime'),
+      ),
+      'indexes' => array(
+        'start' => array('start'),
+        'stop'  => array('stop'),
+      ),
+      'primary key' => array('id'),
+    ),
+
+    'deploy_precommand' => array(
+      'description' => 'Precommand-specific deploy data',
+      'fields' => array(
+        'id' => array(
+          'description' => 'PK',
+          'type'        => 'serial',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'start'   => array('type' => 'datetime'),
+        'command' => array('type' => 'text'),
+        'output'  => array('type' => 'text'),
+        'stop'    => array('type' => 'datetime'),
+      ),
+      'indexes' => array(
+        'start' => array('start'),
+        'stop'  => array('stop'),
+      ),
+      'primary key' => array('id'),
+    ),
+
+    'deploy_checkout' => array(
+      'description' => 'Checkout-specific deploy data',
+      'fields' => array(
+        'id' => array(
+          'description' => 'PK',
+          'type'        => 'serial',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'start'   => array('type' => 'datetime'),
+        'command' => array('type' => 'text'),
+        'output'  => array('type' => 'text'),
+        'stop'    => array('type' => 'datetime'),
+      ),
+      'indexes' => array(
+        'start' => array('start'),
+        'stop'  => array('stop'),
+      ),
+      'primary key' => array('id'),
+    ),
+
+    'deploy_push' => array(
+      'description' => 'Push-specific deploy data',
+      'fields' => array(
+        'id' => array(
+          'description' => 'PK',
+          'type'        => 'serial',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'start'   => array('type' => 'datetime'),
+        'command' => array('type' => 'text'),
+        'output'  => array('type' => 'text'),
+        'stop'    => array('type' => 'datetime'),
+      ),
+      'indexes' => array(
+        'start' => array('start'),
+        'stop'  => array('stop'),
+      ),
+      'primary key' => array('id'),
+    ),
+
+    'deploy_postcommand' => array(
+      'description' => 'Postcommand-specific deploy data',
+      'fields' => array(
+        'id' => array(
+          'description' => 'PK',
+          'type'        => 'serial',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'start'   => array('type' => 'datetime'),
+        'command' => array('type' => 'text'),
+        'output'  => array('type' => 'text'),
+        'stop'    => array('type' => 'datetime'),
+      ),
+      'indexes' => array(
+        'start' => array('start'),
+        'stop'  => array('stop'),
+      ),
+      'primary key' => array('id'),
+    ),
+
+    'deploy_switchrelease' => array(
+      'description' => 'Log of release-switches',
+      'fields' => array(
+        'id' => array(
+          'description' => 'PK',
+          'type'        => 'serial',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'start'   => array('type' => 'datetime'),
+        'command' => array('type' => 'text'),
+        'output'  => array('type' => 'text'),
+        'stop'    => array('type' => 'datetime'),
+      ),
+      'indexes' => array(
+        'start' => array('start'),
+        'stop'  => array('stop'),
+      ),
+      'primary key' => array('id'),
+    ),
+
+    'deploy_update' => array(
+      'description' => 'The result of running update.php via drush',
+      'fields' => array(
+        'id' => array(
+          'description' => 'PK',
+          'type'        => 'serial',
+          'unsigned'    => TRUE,
+          'not null'    => TRUE,
+        ),
+        'start'   => array('type' => 'datetime'),
+        'command' => array('type' => 'text'),
+        'output'  => array('type' => 'text'),
+        'stop'    => array('type' => 'datetime'),
+      ),
+      'indexes' => array(
+        'start' => array('start'),
+        'stop'  => array('stop'),
+      ),
+      'primary key' => array('id'),
+    ),
+
+  );
+
+}
+
+
+function sourcecontrol_install() {
+  drupal_install_schema('sourcecontrol');
+  // For integration with deployment, we need to set up the target server as a
+  // deploy server.
+  sourcecontrol_setup_target_deploy_server();
+}
+
+
+function sourcecontrol_uninstall() {
+  drupal_uninstall_schema('sourcecontrol');
+  // Remove the deploy server we set up on install.
+  sourcecontrol_remove_target_deploy_server();
+}
+
+function sourcecontrol_setup_target_deploy_server() {
+  global $conf;
+  $host = $conf['deploy']['target']['name'];
+  if (!empty($host)) {
+    $server_obj = new stdClass();
+    $server_obj->description = 'Source Control: target server';
+    $server_obj->url = 'http://'. $host .'/services/xmlrpc';
+    drupal_write_record('deploy_servers', $server_obj);
+    variable_set('sourcecontrol_target_server_id', $server_obj->sid);
+  }
+}
+
+function sourcecontrol_remove_target_deploy_server() {
+  $sid = variable_get('sourcecontrol_target_server_id', 0);
+  db_query("DELETE FROM {deploy_servers} WHERE sid = %d", $sid);
+  variable_del('sourcecontrol_target_server_id');
+}

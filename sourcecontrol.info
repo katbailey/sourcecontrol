@@ -1,0 +1,5 @@
+; $Id: $
+name = "Source Control"
+description = "Allows for deploying code from your source control system"
+package = Deployment
+core = 6.x

@@ -1,0 +1,19 @@
+.time,.command,.output {
+  font-family: monospace;
+}
+.time {
+  white-space: nowrap;
+  font-size: smaller;
+}
+.command,.output {
+  white-space: pre;
+  font-size: smaller;
+  overflow: auto;
+}
+dt {
+  margin-top: 1em;
+}
+input,select {
+  width: 300px;
+}
+

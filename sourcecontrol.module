@@ -1,0 +1,679 @@
+<?php
+// $Id: $
+
+/**
+ *
+ * Implementation of hook_menu().
+ *
+ */
+function sourcecontrol_menu() {
+
+  return array(
+    'admin/build/deploy/source' => array(
+      'title'            => 'Source Control Push',
+      'description'      => 'Deploy code from the source control repository',
+      'page callback'    => 'drupal_get_form',
+      'page arguments'   => array('sourcecontrol_push_form'),
+      'access arguments' => array('deploy code'),
+    ),
+    'admin/build/deploy/status' => array(
+      'title'            => 'Deploy Status',
+      'description'      => 'Returns the status of the current deploy (if any)',
+      'page callback'    => 'sourcecontrol_admin_status',
+      'type'             => MENU_CALLBACK,
+      'access arguments' => array('access administration pages'),
+    ),
+    'admin/build/deploy/error' => array(
+      'title'            => 'Deploy Error',
+      'description'      => 'Displays an error message after an aborted code push',
+      'page callback'    => 'sourcecontrol_admin_error',
+      'type'             => MENU_CALLBACK,
+      'access arguments' => array('access administration pages'),
+    ),
+    'admin/build/deploy/config' => array(
+      'title'            => 'Deploy Configuration',
+      'description'      => 'Fetches the values needed to setup this server\'s settings.php for a specific target server',
+      'page callback'    => 'drupal_get_form',
+      'page arguments'   => array('sourcecontrol_push_config_form'),
+      'access arguments' => array('access administration pages'),
+    ),
+    'admin/build/deploy/config/fetch' => array(
+      'title'            => 'Deploy Configuration Service',
+      'description'      => 'Returns raw PHP to be placed in a settings.php',
+      'page callback'    => 'sourcecontrol_push_config_fetch',
+      'type'             => MENU_CALLBACK,
+      'access arguments' => array('access content'),
+    ),
+  );
+
+}
+
+
+/**
+ *
+ * Implementation of hook_perm().
+ *
+ */
+function sourcecontrol_perm() {
+  return array('deploy code');
+}
+
+
+/**
+ *
+ * Implementation of hook_theme().
+ *
+ */
+function sourcecontrol_theme($existing, $type, $theme, $path) {
+  return array(
+    'sourcecontrol_status' => array(
+      'template' => 'sourcecontrol_status',
+      'arguments' => array('status' => (object) array()),
+    ),
+    'sourcecontrol_textstatus' => array(
+      'template' => 'sourcecontrol_textstatus',
+      'arguments' => array('columns' => 'auto', 'colour' => TRUE, 'status' => (object) array()),
+    ),
+  );
+}
+
+
+
+/**
+ *
+ * Implementation of hook_form_alter().
+ *
+ */
+function sourcecontrol_form_alter(&$form, $form_state, $form_id) {
+  switch ($form_id) {
+    case 'deploy_pushform':
+      global $conf;
+      $conf_host = $conf['deploy']['target']['name'];
+      $sid = variable_get('sourcecontrol_target_server_id', 0);
+      $stored_url = parse_url(db_result(db_query("SELECT url FROM {deploy_servers} WHERE sid = %d", $sid)));
+      $stored_host = $stored_url['host'];
+      if (!empty($conf_host) && $stored_host != $conf_host) {
+        // This url value initially gets set on installation of this module,
+        // using the hostname found in settings.php and appending to it the path
+        // to the xmlrpc service. Here we are simply recreating it based on a
+        // changed hostname value in the settings.php configuration.
+        $new_url = 'http://'. $conf_host .'/services/xmlrpc';
+        db_query("UPDATE {deploy_servers} SET url = '%s' WHERE sid = %d", $new_url, $sid);
+        drupal_set_message('NOTE: the Url that was stored for the deploy server was different from the one in settings.php; it has been updated to match what is in settings.php');
+      }
+      if ($sid) {
+        $form['sid'] = array(
+          '#type' => 'value',
+          '#value' => $sid,
+        );
+      }
+      break;
+  }
+}
+
+
+/* End of hooks, Begin "public" functions
+--------------------------------------------------------------------------- */
+
+/**
+ *
+ * Prompts the user to choose which tag they want to deploy and then does it.
+ *
+ * @param $form_state
+ *   FAPI form state
+ *
+ * @return
+ *   FAPI form definition
+ *
+ * @ingroup forms
+ * @see sourcecontrol_push_form_submit()
+ *
+ */
+function sourcecontrol_push_form($form_state) {
+
+  global $conf;
+
+  $path = drupal_get_path('module', 'sourcecontrol');
+
+  require_once "{$path}/sourcecontrol_sc.inc";
+
+  try {
+
+    $sc = _sourcecontrol_get_sc();
+
+    $tags = $sc->gettags();
+    $tags['autodetect'] = 'Autodetect ('. _sourcecontrol_determinetag('autodetect', $tags) .')';
+
+    drupal_add_js(
+      array('sourcecontrol' => array(
+        'path' => $path,
+      )),
+      'setting'
+    );
+    drupal_add_js("{$path}/js/pretty.js");
+    drupal_add_css("{$path}/css/pretty.css");
+
+    $form = array(
+      'tag' => array(
+        '#type'    => 'select',
+        '#title'   => 'Tag to deploy',
+        '#options' => $tags,
+        '#default_value' => 'autodetect',
+      ),
+      'target' => array(
+        '#type'          => 'hidden',
+        '#default_value' => 'child',
+      ),
+      'submit' => array(
+        '#type'  => 'submit',
+        '#value' => 'Push',
+      )
+    );
+
+    // If this server has the option to deploy to self
+    if (isset($conf['deploy']['self']) && $conf['deploy']['self']) {
+      $form['target'] = array(
+        '#type' => 'select',
+        '#title' => 'Target of deploy',
+        '#options' => array(
+          'child' => 'Default',
+          'self'  => 'Self',
+        ),
+        '#default_value' => 'child',
+      );
+    }
+
+    return $form;
+
+  }
+  catch (Exception $e) {
+
+    drupal_set_message(sprintf("Epic fail: %s", $e->getMessage()), 'error');
+
+  }
+
+}
+
+
+/**
+ *
+ *
+ *
+ */
+function sourcecontrol_push_form_submit($form, &$form_state) {
+
+  // This takes way longer than the 30s default
+  ini_set('max_execution_time', 0);
+
+  try {
+    sourcecontrol_push(
+      (($form_state['values']['target']) ? $form_state['values']['target'] : ''),
+      (($form_state['values']['tag'])    ? $form_state['values']['tag']    : '')
+    );
+  } catch (Exception $e) {
+    drupal_set_message(sprintf("Epic fail: %s", $e->getMessage()), 'error');
+  }
+
+}
+
+
+/**
+ *
+ *
+ *
+ */
+function sourcecontrol_push_config_form(&$form_state) {
+
+  $form = array(
+    'target' => array(
+      '#type'  => 'textfield',
+      '#title' => 'Target hostname',
+    ),
+    's' => array(
+      '#type'  => 'submit',
+      '#value' => 'Generate',
+    ),
+  );
+
+  if (isset($form_state['storage']['stuff'])) {
+    $form['newelement'] = array(
+      '#type' => 'markup',
+      '#value' => $form_state['storage']['stuff'],
+    );
+  }
+
+  return $form;
+
+}
+
+
+/**
+ *
+ *
+ *
+ */
+function sourcecontrol_push_config_form_submit($form, &$form_state) {
+
+  global $conf;
+
+  unset($form_state['storage']['stuff']);
+  if (isset($form_state['values']['target']) && $form_state['values']['target']) {
+    $form_state['storage']['stuff'] = '
+      <p>Note that this is only the suggested configuration and that you should probably review it and make any requried modifications.  Notably, you\'ll want to generate a key, place it in deploy/.ssh/keys/ and put it\'s name in the &quot;key&quot; field below:</p>
+      <pre style="overflow: auto;">'. file_get_contents("http://{$form_state['values']['target']}/admin/build/deploy/config/fetch?key={$conf['deploy']['key']}") .'</pre>
+    ';
+  }
+
+}
+
+
+/**
+ *
+ * Really fun.  We generate raw PHP here that the user can then copy/paste into
+ * their settings.php file.
+ *
+ */
+function sourcecontrol_push_config_fetch() {
+
+  global $conf, $db_url;
+
+  $db = parse_url($db_url);
+  $user = posix_getpwuid(fileowner('index.php'));
+
+  if ($_GET['key'] == $conf['deploy']['key']) {
+
+    print trim(preg_replace('/^      /m', '', "\n\n
+      # Workflow
+
+      // Get the common workflow config from default
+      require 'sites/default/settings-workflow.php';
+
+      // Setup the site-specific config
+      \$conf['deploy']['target'] = array(
+        'type' => 'child',
+        'name' => '{$_SERVER['HTTP_HOST']}',
+        'hosts' => array(                          // For production environments, add multiple hosts
+          array(
+            'name' => '{$_SERVER['HTTP_HOST']}',   // Guessed
+            'port' => '22',                        // Guessed
+            'path' => '". realpath('../../') ."',
+            'user' => '". $user['name'] ."',
+            'key'  => 'some-key-name',             // Manual
+          ),
+        ),
+        'commands' => array(
+          'pre' => '',
+          'post' => '',
+        ),
+        'backup' => array(
+          // This is taken from this instance's db config.  They're likely to be similar, but not guaranted.
+          'db' => array(
+            'type' => '". preg_replace('/mysqli/', 'mysql', $db['scheme']) ."',
+            'name' => '". preg_replace('#/#', '', $db['path']) ."',
+            'host' => {$db['host']},
+            'user' => {$db['user']},
+            'pass' => {$db['pass']},
+          ),
+          'ugc' => array(
+            'src' => '". realpath('../../') ."/files',    // Guessed
+            'dst' => '/tmp{$_SERVER['HTTP_HOST']}-files', // Assumed
+          ),
+        ),
+      );
+    "));
+
+  }
+  else {
+
+    print "Invalid key.  Please check your config";
+
+  }
+
+  exit(0);
+
+}
+
+
+/**
+ *
+ * Draws the results from the latest deploy.
+ *
+ */
+function sourcecontrol_admin_status() {
+  print theme('sourcecontrol_status', sourcecontrol_fetchlog());
+  return 0;
+}
+
+
+/**
+ *
+ * Does the actual deploying
+ *
+ * \a target  Usually, "child", sometimes "self".
+ * \a tag     Name of tag to deploy
+ * \a plan    The deploy plan id (if any)
+ *
+ */
+function sourcecontrol_push($target, $tag, $plan=0) {
+
+  global $conf;
+
+  $path = drupal_get_path('module', 'sourcecontrol');
+
+  _sourcecontrol_setuppersistentmessages($reset=TRUE);
+
+  require_once "{$path}/sourcecontrol_command.inc";
+  require_once "{$path}/sourcecontrol_log.inc";
+  require_once "{$path}/sourcecontrol_push.inc";
+
+  /*
+  // Uncomment this to nuke the deploy logs on every run
+  drupal_uninstall_schema('sourcecontrol');
+  drupal_install_schema('sourcecontrol');
+  */
+
+  try {
+
+    $sc  = _sourcecontrol_get_sc();
+    $tag = _sourcecontrol_determinetag($tag);
+    $log = new sourcecontrol_Log();
+    $t   = $conf['deploy']['target']; // Aliasing to keep variable names short
+
+    $id = $log->start($tag, $plan);
+
+    drupal_set_message("Deploying tag: \"{$tag}\" with log id: \"{$id}\" and plan id: \"{$plan}\".");
+
+    $time = microtime(TRUE);
+
+    // Name-spacing classes just feels wrong in all kinds of ways.
+    $cmd  = new sourcecontrol_Command();
+    $push = sourcecontrol_Push::factory($conf['deploy']['push']['type']);
+
+    if ($target == 'self') {
+
+      $s = $conf['deploy']['self'];
+      $sc->updatelocal($id, $s['hosts'][0], $tag);              // Update the local checkouts
+      $cmd->switchrelease($id, $tag, $s['hosts']);              // Switch the "active" symlink
+      $cmd->update($id, $s['hosts'][0], $_SERVER['HTTP_HOST']); // Run drush update
+      $cmd->arbitrary($id, $s, 'post');                         // Run arbitrary post-commands
+
+    }
+    else {
+
+      $sc->checkout($id, $tag);                      // Checkout the requested tag locally
+      _sourcecontrol_checkforsync($tag);             // Check for the edge case of tag updates during QA
+      $cmd->backupdatabase($id);                     // Backup remote database
+      $cmd->backupugc($id);                          // Backup remote UGC
+      $cmd->arbitrary($id, $t, 'pre');               // Run arbitrary pre-commands
+      $push->push($id, $tag);                        // Push the code to the remote server(s)
+      $cmd->switchrelease($id, $tag, $t['hosts']);   // Switch the "active" symlink
+      $cmd->arbitrary($id, $t, 'post');              // Run arbitrary post-commands
+      $cmd->update($id, $t['hosts'][0], $t['name']); // Run drush update
+
+    }
+
+    $log->stop($id);
+
+    drupal_set_message(t('Total processing time: !timem', array(
+      '!time' => sprintf('%.2f', (microtime(TRUE) - $time) / 60)
+    )));
+
+  }
+  catch (Exception $e) {
+    if (isset($log) && $log->open) {
+      $log->stop($id,$e->getMessage());
+    }
+    unset($_SESSION['persistentmessages']);
+    throw $e;
+  }
+
+  unset($_SESSION['persistentmessages']);
+
+}
+
+
+/**
+ *
+ * Grabs the log and dumps it into a multidimensional array.  Used by both the
+ * frontend and Drush.
+ *
+ */
+function sourcecontrol_fetchlog($plan=0) {
+
+  _sourcecontrol_setuppersistentmessages();
+
+  $where = ($plan) ? "plan_id = {$plan}" : 'TRUE';
+
+  $log = db_fetch_object(db_query("
+    SELECT
+      id,
+      tag,
+      start,
+      backup_db_id,
+      backup_ugc_id,
+      checkout_id,
+      update_id,
+      stop
+    FROM
+      {deploy}
+    WHERE
+      {$where}
+    ORDER BY
+      id DESC
+    LIMIT 1
+  "));
+
+  // Preset variables so as to avoid warnings when the template tries to print them out.
+  $log->backup_db  = (object) array('start' => '', 'command' => '', 'output' => '', 'stop' => '');
+  $log->backup_ugc = (object) array('start' => '', 'command' => '', 'output' => '', 'stop' => '');
+  $log->checkout   = (object) array('start' => '', 'command' => '', 'output' => '', 'stop' => '');
+  $log->update     = (object) array('start' => '', 'command' => '', 'output' => '', 'stop' => '');
+
+  if ($log) {
+
+    foreach (array('precommand','push','switchrelease','postcommand') as $set) {
+      $log->{$set} = _sourcecontrol_getobjarray("
+        SELECT
+          start,
+          command,
+          output,
+          stop
+        FROM
+          {deploy_{$set}} AS t
+        INNER JOIN
+          {deploy_deploy_{$set}} AS l ON t.id = l.{$set}_id
+        WHERE
+          l.deploy_id = {$log->id}
+      ");
+    }
+
+    foreach (array('backup_db','backup_ugc','checkout','update') as $set) {
+      $log->{$set} = db_fetch_object(db_query("
+        SELECT
+          start,
+          command,
+          output,
+          stop
+        FROM
+          {deploy_{$set}} AS t
+        WHERE
+          t.id = %d
+      ", $log->{$set .'_id'}));
+    }
+
+    return $log;
+
+  }
+
+  return array();
+
+}
+
+
+/**
+ *
+ * Implementation of hook_deploy_pre_plan().
+ *
+ */
+function sourcecontrol_deploy_pre_plan($pid) {
+
+  try {
+
+    $tag = _sourcecontrol_determinetag();
+
+    watchdog('sourcecontrol', 'About to deploy code with tag: @tag (processid @pid)', array('@tag' => $tag, '@pid' => $pid));
+    sourcecontrol_push('child', $tag, $pid);
+
+  }
+  catch (Exception $e) {
+
+    /*
+     *
+     * Because we have to support PHP4 as per Drupal standard, we can't just
+     * throw and exception and do fun things with it.  Instead, we flat-out die
+     * here.  Good times ;-)
+     *
+     */
+    die(t('Code deployment was unsuccessful and has been aborted: <br /><div style="padding-left: 2em;">'. $e->getMessage() .'</div>'));
+
+  }
+
+}
+
+
+function sourcecontrol_admin_error() {
+  return t('You have been redirected here because the deployment push you were attempting had to be aborted due to an error with the code push. No content has been deployed.');
+}
+
+
+/**
+ * Implementation of incdeploy_settings_ignore().
+ */
+function sourcecontrol_incdeploy_settings_ignore() {
+  return array('sourcecontrol_target_server_id');
+}
+
+
+
+/* End of "public" functions, start of "private" ones
+--------------------------------------------------------------------------- */
+
+/**
+ *
+ * If \a tag is anything other than 'autodetect', then just return that.
+ * Otherwise, attempt to figure out which tag we're currently using and
+ * return it if it's valid.
+ *
+ */
+function _sourcecontrol_determinetag($tag = 'autodetect') {
+
+  if ($tag != 'autodetect') {
+    return $tag;
+  }
+
+  $sc = _sourcecontrol_get_sc();
+
+  $tag = trim(basename(realpath('../../active'))); // <projectroot>/active/.
+
+  if (!in_array($tag, array_keys($sc->gettags()))) {
+    throw new Exception("It appears that this application is using an invalid tag: {$tag}");
+  }
+
+  return $tag;
+
+}
+
+
+/**
+ *
+ * Because we don't have an actual class for a module, we need functions to set
+ * our variables for us.  </3 Drupal x_x
+ *
+ */
+function _sourcecontrol_get_sc() {
+
+  static $sc;
+
+  if (!$sc) {
+    global $conf;
+    require_once drupal_get_path('module', 'sourcecontrol') .'/sourcecontrol_sc.inc';
+    $sc = sourcecontrol_SourceControl::factory($conf['deploy']['sourcecontrol']['type']);
+  }
+
+  return $sc;
+
+}
+
+
+/**
+ *
+ * To handle the following edge case:
+ *
+ * 1. Client tests a site for isses, and upon finding none, decides to deploy
+ * 2. Meanwhile, someone has patched the tag used to display the site the client has just tested.
+ * 3. Without a way to re-test the patched version, this code will deploy untested code to the next link in the chain.
+ *
+ */
+function _sourcecontrol_checkforsync($tag) {
+
+  // We only care if we're comparing code from the same branch
+  if ($tag != _sourcecontrol_determinetag()) {
+    return TRUE;
+  }
+
+  $log = trim(realpath('../../active/deploy/logs')) .'/sync-test.'. time();
+  $src = trim(realpath("../../active/deploy/tags/{$tag}/htdocs"));
+  $dst = trim(realpath('./'));
+  $cmd = "rsync -avn --size-only --exclude=.svn --exclude=.git* --exclude=CVS --exclude=.bzr --exclude=.hg {$src}/ {$dst}/ | egrep -v \/$";
+  $out = `$cmd`;
+
+  // 5 == the number of lines rsync outputs when all is ok.  More than that, and we've pushed a file.
+  if (count(split("\n", $out)) > 5) {
+    file_put_contents($log, "{$cmd}\n\n{$out}"); // For debugging purposes
+    throw new Exception("There appears to be a discrepency between the code repository and what's currently running here.  Please update the local copy before you push to the next environment.  For a complete log of the failure, check the contents of {$log}.");
+  }
+
+}
+
+
+/**
+ *
+ * Something like this should really be part of Drupal core
+ *
+ */
+function _sourcecontrol_getobjarray($query) {
+
+  $result = db_query($query);
+
+  $r = array();
+  while ($obj = db_fetch_object($result)) {
+    $r[] = $obj;
+  }
+
+  return $r;
+
+}
+
+
+function _sourcecontrol_setuppersistentmessages($reset=FALSE) {
+
+  if ($reset || !isset($_SESSION['persistentmessages'])) {
+    $_SESSION['persistentmessages'] = array(
+      'status' => array(),
+      'error'  => array(),
+    );
+  }
+
+  if (isset($_SESSION['messages']) && $_SESSION['messages']) {
+    foreach ($_SESSION['messages'] as $type => $messages) {
+      if (isset($_SESSION['messages'][$type]) && $_SESSION['messages'][$type]) {
+        foreach ($messages as $m) {
+          if (!in_array($m, $_SESSION['persistentmessages'][$type])) {
+            $_SESSION['persistentmessages'][$type][] = $m;
+          }
+        }
+      }
+    }
+  }
+
+}
